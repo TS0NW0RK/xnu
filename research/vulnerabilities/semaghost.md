@@ -6,7 +6,7 @@
 - **Function:** semaphore_destroy
 - **Type:** Potential Use-After-Free (CWE-416)
 - **Status:** Investigation Required
-- **Discovery Method:** Corgea SAST Analysis
+- **Discovery Method:** Corgea SAST Analysis + manual audit
 
 ## Overview
 Static analysis identified a potential Use-After-Free condition in the XNU semaphore destruction mechanism where a semaphore object might be accessed after being freed.
