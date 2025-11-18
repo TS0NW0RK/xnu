@@ -26,13 +26,17 @@
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 
-/* compile: xcrun -sdk macosx.internal clang -ldarwintest -o devfd_access devfd_access.c -g -Weverything */
-/* sign: codesign --force --sign - --timestamp=none --entitlements devfd_access.entitlements devfd_access */
+/* compile: xcrun -sdk macosx.internal clang -ldarwintest -o devfs_fdesc devfs_fdesc.c -g -Weverything */
+/* sign: codesign --force --sign - --timestamp=none --entitlements devfs_fdesc.entitlements devfs_fdesc */
 
 #include <darwintest.h>
+#include <darwintest/utils.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/param.h>
+#include <sys/stat.h>
+#include <sys/mount.h>
+#include <unistd.h>
 
 T_GLOBAL_META(
 	T_META_NAMESPACE("xnu.vfs"),
@@ -54,7 +58,7 @@ docheck(int fd, int perm)
 }
 
 /* The devfs_access test should not run as root */
-T_DECL(devfd_access, "Calculate the allowed access based on the open-flags for fdesc vnodes")
+T_DECL(devfs_fdesc_access, "Calculate the allowed access based on the open-flags for fdesc vnodes")
 {
 	const char *path = "/dev/null";
 	int fd_rdonly, fd_wronly, fd_evtonly, fd_evtonly_drw;
@@ -117,4 +121,84 @@ T_DECL(devfd_access, "Calculate the allowed access based on the open-flags for f
 	close(fd_wronly);
 	close(fd_evtonly);
 	close(fd_evtonly_drw);
+}
+
+T_DECL(devfs_fdesc_mount_block, "Test that mounting over /dev/fd/<fd> is blocked")
+{
+	int dir_fd;
+	char fdesc_path[MAXPATHLEN];
+	char temp_dir[MAXPATHLEN];
+	int ret;
+
+	T_SETUPBEGIN;
+
+	/* Create a temporary directory */
+	snprintf(temp_dir, sizeof(temp_dir), "%s/devfs_fdesc_mount_test.XXXXXX", dt_tmpdir());
+	T_ASSERT_NOTNULL(mkdtemp(temp_dir), "Create temporary directory");
+
+	/* Open the temporary directory */
+	T_ASSERT_POSIX_SUCCESS(dir_fd = open(temp_dir, O_DIRECTORY),
+	    "Setup: Opening temporary directory with O_DIRECTORY, dir_fd = %d",
+	    dir_fd);
+
+	/* Construct /dev/fd/<fd> path */
+	snprintf(fdesc_path, sizeof(fdesc_path), "/dev/fd/%d", dir_fd);
+
+	T_SETUPEND;
+
+	T_LOG("Testing mount blocking on /dev/fd/%d path: %s", dir_fd, fdesc_path);
+
+	/* Test: Attempt to mount tmpfs over /dev/fd/<fd> - should fail with ENOTSUP */
+	ret = mount("tmpfs", fdesc_path, MNT_RDONLY, NULL);
+	T_EXPECT_POSIX_FAILURE(ret, ENOTSUP,
+	    "Mounting tmpfs over %s should fail with ENOTSUP", fdesc_path);
+
+	/* Test: Attempt to mount devfs over /dev/fd/<fd> - should also fail with ENOTSUP */
+	ret = mount("devfs", fdesc_path, MNT_RDONLY, NULL);
+	T_EXPECT_POSIX_FAILURE(ret, ENOTSUP,
+	    "Mounting devfs over %s should fail with ENOTSUP", fdesc_path);
+
+	/* Cleanup */
+	close(dir_fd);
+	rmdir(temp_dir);
+}
+
+T_DECL(devfs_fdesc_unmount_block, "Test that unmounting /dev/fd/<fd> is blocked")
+{
+	int dir_fd;
+	char fdesc_path[MAXPATHLEN];
+	char temp_dir[MAXPATHLEN];
+	int ret;
+
+	T_SETUPBEGIN;
+
+	/* Create a temporary directory */
+	snprintf(temp_dir, sizeof(temp_dir), "%s/devfs_fdesc_unmount_test.XXXXXX", dt_tmpdir());
+	T_ASSERT_NOTNULL(mkdtemp(temp_dir), "Create temporary directory");
+
+	/* Open the temporary directory */
+	T_ASSERT_POSIX_SUCCESS(dir_fd = open(temp_dir, O_DIRECTORY),
+	    "Setup: Opening temporary directory with O_DIRECTORY, dir_fd = %d",
+	    dir_fd);
+
+	/* Construct /dev/fd/<fd> path */
+	snprintf(fdesc_path, sizeof(fdesc_path), "/dev/fd/%d", dir_fd);
+
+	T_SETUPEND;
+
+	T_LOG("Testing unmount blocking on /dev/fd/%d path: %s", dir_fd, fdesc_path);
+
+	/* Test: Attempt to unmount /dev/fd/<fd> - should fail with ENOTSUP */
+	ret = unmount(fdesc_path, 0);
+	T_EXPECT_POSIX_FAILURE(ret, ENOTSUP,
+	    "Unmounting %s should fail with ENOTSUP", fdesc_path);
+
+	/* Test: Attempt to force unmount /dev/fd/<fd> - should also fail with ENOTSUP */
+	ret = unmount(fdesc_path, MNT_FORCE);
+	T_EXPECT_POSIX_FAILURE(ret, ENOTSUP,
+	    "Force unmounting %s should fail with ENOTSUP", fdesc_path);
+
+	/* Cleanup */
+	close(dir_fd);
+	rmdir(temp_dir);
 }

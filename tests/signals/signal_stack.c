@@ -6,6 +6,13 @@
 
 #include <darwintest.h>
 
+T_GLOBAL_META(
+	T_META_RUN_CONCURRENTLY(true),
+	T_META_CHECK_LEAKS(false),
+	T_META_TAG_VM_PREFERRED,
+	T_META_RADAR_COMPONENT_NAME("xnu"),
+	T_META_RADAR_COMPONENT_VERSION("signals"));
+
 static uint64_t stack_base, stack_end;
 
 static void
