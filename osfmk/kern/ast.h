@@ -133,6 +133,7 @@ __options_decl(ast_t, uint32_t, {
 	AST_DEBUG_ASSERT          = 0x800000, /* check debug assertion */
 	AST_TELEMETRY_MACF        = 0x1000000, /* telemetry sample requested by MAC framework */
 	AST_SYNTHESIZE_MACH       = 0x2000000,
+	AST_LARGE_ENTER_TELEMETRY = 0x4000000, /* guard objects telemetry */
 });
 
 #define AST_NONE                0x00
@@ -146,13 +147,18 @@ __options_decl(ast_t, uint32_t, {
 
 /* Per-thread ASTs follow the thread at context-switch time. */
 #define AST_PER_THREAD  (AST_APC | AST_BSD | AST_MACF | AST_RESET_PCS | \
-	AST_ARCADE | AST_LEDGER | AST_MACH_EXCEPTION | AST_SYNTHESIZE_MACH | AST_TELEMETRY_ALL | AST_KEVENT | AST_PROC_RESOURCE | AST_DEBUG_ASSERT)
+	AST_ARCADE | AST_LEDGER | AST_MACH_EXCEPTION | AST_SYNTHESIZE_MACH | \
+	AST_LARGE_ENTER_TELEMETRY | AST_TELEMETRY_ALL | AST_KEVENT | \
+	AST_PROC_RESOURCE | AST_DEBUG_ASSERT)
 
 /* Handle AST_URGENT detected while in the kernel */
 extern void ast_taken_kernel(void);
 
 /* Handle an AST flag set while returning to user mode (may continue via thread_exception_return) */
 extern void ast_taken_user(void);
+
+/* Check for ASTs for per-process aio threads in the kernel */
+extern void ast_check_async_thread(void);
 
 /* Check for pending ASTs */
 extern void ast_check(processor_t processor);

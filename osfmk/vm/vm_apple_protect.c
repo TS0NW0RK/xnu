@@ -1039,6 +1039,7 @@ apple_protect_pager_create(
 	pager->ap_pgr_hdr.mo_ikot = IKOT_MEMORY_OBJECT;
 	pager->ap_pgr_hdr.mo_pager_ops = &apple_protect_pager_ops;
 	pager->ap_pgr_hdr.mo_control = MEMORY_OBJECT_CONTROL_NULL;
+	pager->ap_pgr_hdr.mo_last_unmap_ctid = 0;
 
 	pager->is_ready = FALSE;/* not ready until it has a "name" */
 	/* one reference for the caller */
@@ -1500,7 +1501,7 @@ apple_protect_pager_purge(
 	assert(object != VM_OBJECT_NULL);
 	vm_object_lock(object);
 	pages_purged = object->resident_page_count;
-	vm_object_reap_pages(object, REAP_DATA_FLUSH);
+	vm_object_reap_pages(object, REAP_DATA_FLUSH_CLEAN);
 	pages_purged -= object->resident_page_count;
 //	printf("     %s:%d pager %p object %p purged %llu left %d\n", __FUNCTION__, __LINE__, pager, object, pages_purged, object->resident_page_count);
 	vm_object_unlock(object);

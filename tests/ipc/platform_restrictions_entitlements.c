@@ -8,21 +8,14 @@
 #include <mach/mach_error.h>
 #include <mach/task.h>
 
+#include "../task_security_config.h"
+
 T_GLOBAL_META(
 	T_META_NAMESPACE("xnu.spawn"),
 	T_META_RUN_CONCURRENTLY(TRUE),
 	T_META_RADAR_COMPONENT_NAME("xnu"),
 	T_META_RADAR_COMPONENT_VERSION("spawn"),
 	T_META_TAG_VM_PREFERRED);
-
-
-struct task_security_config {
-	uint8_t hardened_heap: 1,
-	    tpro :1,
-	    reserved: 1,
-	    platform_restrictions_version :3;
-	uint8_t hardened_process_version;
-};
 
 T_DECL(test_platform_restrictions_entitlements,
     "entitlement should enable the platform restrictions configuration",
@@ -38,6 +31,7 @@ T_DECL(test_platform_restrictions_entitlements,
 	count = TASK_SECURITY_CONFIG_INFO_COUNT;
 	kr = task_info(mach_task_self(), TASK_SECURITY_CONFIG_INFO, (task_info_t)&config, &count);
 	T_ASSERT_MACH_SUCCESS(kr, "task_info(TASK_SECURITY_CONFIG_INFO)");
+	T_ASSERT_EQ(count, TASK_SECURITY_CONFIG_INFO_COUNT, "tsi should return correct count");
 
 	struct task_security_config *conf = (struct task_security_config*)&config;
 	uint8_t vers = conf->platform_restrictions_version;
@@ -50,7 +44,7 @@ T_DECL(test_platform_restrictions_entitlements,
 	count = TASK_IPC_SPACE_POLICY_INFO_COUNT;
 	kr = task_info(mach_task_self(), TASK_IPC_SPACE_POLICY_INFO, (task_info_t)&space_info, &count);
 	T_ASSERT_MACH_SUCCESS(kr, "task_info(TASK_SECURITY_CONFIG_INFO)");
-	T_ASSERT_EQ_UINT(count, 1, "ipc space should return 1 value");
+	T_ASSERT_EQ_UINT(count, TASK_IPC_SPACE_POLICY_INFO_COUNT, "is should return correct count");
 
 	T_EXPECT_TRUE(space_info.space_policy & 0x400, "enhanced V2 bit should be set");
 

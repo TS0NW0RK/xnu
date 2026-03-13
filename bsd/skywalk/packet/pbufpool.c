@@ -55,7 +55,7 @@ static struct __metadata_preamble *pp_metadata_fini(struct __kern_quantum *,
     struct kern_pbufpool *, struct mbuf **, struct __kern_packet **,
     struct skmem_obj **, struct skmem_obj **, struct skmem_obj **, struct skmem_obj **);
 static void pp_purge_upp_locked(struct kern_pbufpool *pp, pid_t pid);
-static void pp_buf_seg_ctor(struct sksegment *, IOSKMemoryBufferRef, void *);
+static int pp_buf_seg_ctor(struct sksegment *, IOSKMemoryBufferRef, void *);
 static void pp_buf_seg_dtor(struct sksegment *, IOSKMemoryBufferRef, void *);
 static void pp_destroy_upp_locked(struct kern_pbufpool *);
 static void pp_destroy_upp_bft_locked(struct kern_pbufpool *);
@@ -96,6 +96,9 @@ static SKMEM_TAG_DEFINE(skmem_tag_pbufpool_hash, SKMEM_TAG_PBUFPOOL_HASH);
 #define SKMEM_TAG_PBUFPOOL_BFT_HASH  "com.apple.skywalk.pbufpool.bft.hash"
 static SKMEM_TAG_DEFINE(skmem_tag_pbufpool_bft_hash, SKMEM_TAG_PBUFPOOL_BFT_HASH);
 
+#if HAS_MTE
+extern bool is_mte_enabled;
+#endif /* HAS_MTE */
 
 struct kern_pbufpool_u_htbl {
 	struct kern_pbufpool_u_bkt upp_hash[KERN_PBUFPOOL_U_HASH_SIZE];
@@ -601,6 +604,13 @@ pp_metadata_construct(struct __kern_quantum *kqum, struct __user_quantum *uqum,
 				goto fail;
 			}
 
+#if HAS_MTE && CONFIG_KERNEL_TAGGING
+			if (__probable(is_mte_enabled)) {
+				/* Checking to ensure the object address is tagged */
+				ASSERT((vm_offset_t)kbuf !=
+				    vm_memtag_canonicalize_kernel((vm_offset_t)kbuf));
+			}
+#endif /* HAS_MTE && CONFIG_KERNEL_TAGGING */
 
 			blistn = (*blist)->mo_next;
 			(*blist)->mo_next = NULL;
@@ -902,14 +912,17 @@ pp_metadata_dtor(void *addr, void *arg)
 	    METADATA_PREAMBLE_SZ), arg, TRUE);
 }
 
-static void
+static int
 pp_buf_seg_ctor(struct sksegment *sg, IOSKMemoryBufferRef md, void *arg)
 {
 	struct kern_pbufpool *__single pp = arg;
+	int ret;
 
+	ret = 0;
 	if (pp->pp_pbuf_seg_ctor != NULL) {
-		pp->pp_pbuf_seg_ctor(pp, sg, md);
+		ret = pp->pp_pbuf_seg_ctor(pp, sg, md);
 	}
+	return ret;
 }
 
 static void
@@ -1623,8 +1636,8 @@ pp_remove_upp_bft_chain_locked(struct kern_pbufpool *pp,
 	obj_idx_t bft_idx;
 
 	ASSERT(!(kqum->qum_qflags & QUM_F_INTERNALIZED));
-	bft_idx = kqum->qum_user->qum_buf[0].buf_nbft_idx;
 	kbft = &kqum->qum_buf[0];
+	bft_idx = kbft->buf_nbft_idx;
 	if (bft_idx == OBJ_IDX_NONE) {
 		return 0;
 	}
@@ -1646,7 +1659,6 @@ pp_remove_upp_bft_chain_locked(struct kern_pbufpool *pp,
 
 	do {
 		struct __kern_buflet *pbft = kbft;
-		struct __kern_buflet_ext *kbe;
 
 		kbft = pp_remove_upp_bft_locked(pp, bft_idx);
 		if (__improbable(kbft == NULL)) {
@@ -1659,8 +1671,7 @@ pp_remove_upp_bft_chain_locked(struct kern_pbufpool *pp,
 		ASSERT(kbft->buf_flag & BUFLET_FLAG_EXTERNAL);
 		BUF_NBFT_IDX(pbft, bft_idx);
 		BUF_NBFT_ADDR(pbft, kbft);
-		kbe = __container_of(kbft, struct __kern_buflet_ext, kbe_overlay);
-		bft_idx = kbe->kbe_buf_user->buf_nbft_idx;
+		bft_idx = kbft->buf_nbft_idx;
 		++nbfts;
 	} while ((bft_idx != OBJ_IDX_NONE) && (nbfts < upkt_nbfts));
 
@@ -2016,6 +2027,13 @@ pp_alloc_packet_common(struct kern_pbufpool *pp, uint16_t bufcnt,
 			break;
 		}
 
+#if HAS_MTE && CONFIG_KERNEL_TAGGING
+		if (__probable(is_mte_enabled)) {
+			/* Checking to ensure the object address is tagged */
+			ASSERT((vm_offset_t)kqum !=
+			    vm_memtag_canonicalize_kernel((vm_offset_t)kqum));
+		}
+#endif /* HAS_MTE && CONFIG_KERNEL_TAGGING */
 
 		if (tagged) {
 			*array_cp = SK_PTR_ENCODE(kqum, METADATA_TYPE(kqum),
@@ -2136,6 +2154,13 @@ pp_alloc_pktq(struct kern_pbufpool *pp, uint16_t bufcnt,
 			break;
 		}
 
+#if HAS_MTE && CONFIG_KERNEL_TAGGING
+		if (__probable(is_mte_enabled)) {
+			/* Checking to ensure the object address is tagged */
+			ASSERT((vm_offset_t)kpkt !=
+			    vm_memtag_canonicalize_kernel((vm_offset_t)kpkt));
+		}
+#endif /* HAS_MTE && CONFIG_KERNEL_TAGGING */
 
 		KPKTQ_ENQUEUE(pktq, kpkt);
 
@@ -2558,6 +2583,13 @@ pp_alloc_buflet_common(struct kern_pbufpool *pp,
 		list->mo_next = NULL;
 		kbft = (kern_buflet_t)(void *)list;
 
+#if HAS_MTE && CONFIG_KERNEL_TAGGING
+		if (__probable(is_mte_enabled)) {
+			/* Checking to ensure the object address is tagged */
+			ASSERT((vm_offset_t)kbft !=
+			    vm_memtag_canonicalize_kernel((vm_offset_t)kbft));
+		}
+#endif /* HAS_MTE && CONFIG_KERNEL_TAGGING */
 
 		KBUF_EXT_INIT(kbft, pp);
 		*array_cp = (uint64_t)kbft;

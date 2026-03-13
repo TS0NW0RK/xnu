@@ -1216,7 +1216,7 @@ switch_port_list_dealloc(switch_port_list_t list)
 static errno_t
 switch_port_list_add_port(switch_port_list_t port_list, u_int unit,
     const char * ifname, u_short if_index, const char * member_ifname,
-    u_int num_addrs, bool mac_nat, struct in_addr * ip)
+    u_int num_addrs, bool mac_nat, bool attach_stack, struct in_addr * ip)
 {
 	int             buf_size;
 	errno_t         err = EINVAL;
@@ -1267,11 +1267,13 @@ switch_port_list_add_port(switch_port_list_t port_list, u_int unit,
 	p->mac_nat = mac_nat;
 	ifnet_get_lladdr(ifname, &p->mac);
 	ifnet_get_lladdr(member_ifname, &p->member_mac);
-	p->ip = *ip;
 	p->if_index = if_index;
-	get_ipv6_ll_address(&p->mac, &p->ip6);
-	inet_ntop(AF_INET6, &p->ip6, ntopbuf_ip, sizeof(ntopbuf_ip));
-	T_LOG("%s %s", ifname, ntopbuf_ip);
+	if (attach_stack) {
+		p->ip = *ip;
+		get_ipv6_ll_address(&p->mac, &p->ip6);
+		inet_ntop(AF_INET6, &p->ip6, ntopbuf_ip, sizeof(ntopbuf_ip));
+		T_LOG("%s %s", ifname, ntopbuf_ip);
+	}
 	return 0;
 
 failed:
@@ -2732,6 +2734,7 @@ bridge_cleanup(const char * bridge, u_int n_ports, bool fail_on_error);
 static int fake_bsd_mode;
 static int fake_fcs;
 static int fake_trailer_length;
+static int fake_nxattach;
 
 static void
 fake_set_trailers_fcs(bool enable)
@@ -2803,6 +2806,32 @@ fake_restore_bsd_mode(void)
 	    NULL, 0, &fake_bsd_mode, sizeof(fake_bsd_mode));
 	T_LOG("sysctl net.link.fake.bsd_mode=%d returned %d",
 	    fake_bsd_mode, error);
+}
+
+static void
+fake_set_nxattach(bool enable)
+{
+	int     error;
+	int     nxattach;
+	size_t  len;
+
+	nxattach = (enable) ? 1 : 0;
+	len = sizeof(fake_nxattach);
+	error = sysctlbyname("net.link.fake.nxattach",
+	    &fake_nxattach, &len,
+	    &nxattach, sizeof(nxattach));
+	T_ASSERT_EQ(error, 0, "sysctl net.link.fake.nxattach %d", nxattach);
+}
+
+static void
+fake_restore_nxattach(void)
+{
+	int     error;
+
+	error = sysctlbyname("net.link.fake.nxattach",
+	    NULL, 0, &fake_nxattach, sizeof(fake_nxattach));
+	T_LOG("sysctl net.link.fake.nxatach=%d returned %d",
+	    fake_nxattach, error);
 }
 
 static void
@@ -2900,6 +2929,7 @@ bridge_setup(char * bridge, u_int n_ports, u_int num_addrs,
 	}
 	list = switch_port_list_alloc(n_ports, mac_nat);
 	fake_set_bsd_mode(true);
+	fake_set_nxattach(false);
 	fake_set_trailers_fcs(trailers);
 	for (u_int i = 0; i < n_ports; i++) {
 		bool    do_mac_nat;
@@ -2963,7 +2993,7 @@ bridge_setup(char * bridge, u_int n_ports, u_int num_addrs,
 		}
 		/* we'll send/receive on the interface */
 		err = switch_port_list_add_port(list, i, ifname, if_index,
-		    member_ifname, num_addrs, do_mac_nat, &ip);
+		    member_ifname, num_addrs, do_mac_nat, attach_stack, &ip);
 		if (err != 0) {
 			goto done;
 		}
@@ -2995,6 +3025,7 @@ bridge_cleanup(const char * bridge, u_int n_ports, bool fail_on_error)
 	S_n_ports = 0;
 	fake_restore_trailers_fcs();
 	fake_restore_bsd_mode();
+	fake_restore_nxattach();
 	return;
 }
 
@@ -3178,7 +3209,9 @@ block_all_traffic(bool input, const char* infname1, const char* infname2)
 	char command[512];
 	char *dir = input ? "in" : "out";
 
-	snprintf(command, sizeof(command), "echo \"block %s on %s all\nblock %s on %s all\n\" | pfctl -vvv -f -",
+	snprintf(command, sizeof(command),
+	    "echo \"block %s log on %s all\n"
+	    "block %s log on %s all\n\" | pfctl -vvv -f -",
 	    dir, infname1, dir, infname2);
 	/* enable block all filter */
 	param.ifbrp_filter = IFBF_FILT_MEMBER | IFBF_FILT_ONLYIP;

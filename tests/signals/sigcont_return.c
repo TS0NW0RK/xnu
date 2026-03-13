@@ -6,7 +6,12 @@
 
 #include <darwintest.h>
 
-T_GLOBAL_META(T_META_RUN_CONCURRENTLY(true));
+T_GLOBAL_META(
+	T_META_RUN_CONCURRENTLY(true),
+	T_META_CHECK_LEAKS(false),
+	T_META_TAG_VM_PREFERRED,
+	T_META_RADAR_COMPONENT_NAME("xnu"),
+	T_META_RADAR_COMPONENT_VERSION("signals"));
 
 T_DECL(sigcontreturn, "checks that a call to waitid() for a child that is stopped and then continued returns correctly", T_META_TAG_VM_PREFERRED)
 {

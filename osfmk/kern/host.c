@@ -119,6 +119,8 @@
 SCALABLE_COUNTER_DEFINE(vm_statistics_zero_fill_count);        /* # of zero fill pages */
 SCALABLE_COUNTER_DEFINE(vm_statistics_reactivations);          /* # of pages reactivated */
 SCALABLE_COUNTER_DEFINE(vm_statistics_pageins);                /* # of pageins */
+SCALABLE_COUNTER_DEFINE(vm_statistics_pageins_aborted);        /* # of pageins aborted */
+SCALABLE_COUNTER_DEFINE(vm_statistics_pageins_requested);      /* # of pageins requested */
 SCALABLE_COUNTER_DEFINE(vm_statistics_pageouts);               /* # of pageouts */
 SCALABLE_COUNTER_DEFINE(vm_statistics_faults);                 /* # of faults */
 SCALABLE_COUNTER_DEFINE(vm_statistics_cow_faults);             /* # of copy-on-writes */
@@ -168,7 +170,7 @@ host_processors(host_priv_t host_priv, processor_array_t * out_array, mach_msg_t
 	static_assert(sizeof(mach_port_t) == sizeof(processor_t));
 
 	mach_port_array_t ports = mach_port_array_alloc(count, Z_WAITOK);
-	if (!ports) {
+	if (ports == NULL) {
 		return KERN_RESOURCE_SHORTAGE;
 	}
 
@@ -1146,7 +1148,7 @@ host_processor_sets(host_priv_t host_priv, processor_set_name_array_t * pset_lis
 	ports = mach_port_array_alloc(1, Z_WAITOK | Z_NOFAIL);
 
 	/* do the conversion that Mig should handle */
-	ports[0].port = convert_pset_name_to_port(&pset0);
+	ports[0].port = convert_pset_name_to_port(sched_boot_pset);
 
 	*pset_list = ports;
 	*count = 1;

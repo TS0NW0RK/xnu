@@ -4,6 +4,7 @@ from kdp import *
 from utils import *
 import struct
 from collections import namedtuple
+import process
 
 def ReadPhysInt(phys_addr, bitsize = 64, cpuval = None):
     """ Read a physical memory data based on address.
@@ -571,8 +572,7 @@ def PmapDecodeTTEARM64(tte, level, stage2 = False, is_iommu_tte = False):
             attr_index = (tte >> 2) & 0x7
             attr_string = { 0: 'WRITEBACK', 1: 'WRITECOMB', 2: 'WRITETHRU',
                 3: 'CACHE DISABLE',
-                4: 'RESERVED'
-                ,
+                4: 'RESERVED (MTE if FEAT_MTE supported)',
                 5: 'POSTED (DISABLE_XS if FEAT_XS supported)',
                 6: 'POSTED_REORDERED (POSTED_COMBINED_REORDERED if FEAT_XS supported)',
                 7: 'POSTED_COMBINED_REORDERED (POSTED_COMBINED_REORDERED_XS if FEAT_XS supported)' }
@@ -872,7 +872,7 @@ def PVDumpPTE(pvep, ptep, verbose_level = vHUMAN):
         if ptd.pmap == kern.globals.kernel_pmap:
             extra_str = "Mapped by kernel task (kernel_pmap: {:#x})".format(ptd.pmap)
         elif verbose_level >= vDETAIL:
-            task = TaskForPmapHelper(ptd.pmap)
+            task = process.TaskForPmapHelper(ptd.pmap)
             extra_str = "Mapped by user task (pmap: {:#x}, task: {:s})".format(ptd.pmap, "{:#x}".format(task) if task is not None else "<unknown>")
     try:
         print("{:s}PTEP {:#x}{:s}: {:#x}".format(pve_str, ptep, pte_str, dereference(kern.GetValueFromAddress(ptep, 'pt_entry_t *'))))
@@ -1058,7 +1058,7 @@ def KVToPhysARM(addr):
     else:
         papt_table = kern.globals.libsptm_papt_ranges
         page_size = kern.globals.page_size
-        for i in range(0, kern.globals.libsptm_n_papt_ranges):
+        for i in range(0, unsigned(dereference(kern.globals.libsptm_n_papt_ranges))):
             if (addr >= int(unsigned(papt_table[i].papt_start))) and (addr < (int(unsigned(papt_table[i].papt_start)) + int(unsigned(papt_table[i].num_mappings) * page_size))):
                 return (addr - int(unsigned(papt_table[i].papt_start)) + int(unsigned(papt_table[i].paddr_start)))
         raise ValueError("VA {:#x} not found in physical region lookup table".format(addr))
@@ -1181,7 +1181,7 @@ def ShowPTEARM(pte, page_size, level):
         if ptd.pmap == kern.globals.kernel_pmap:
             pmap_str = "(kernel_pmap)"
         else:
-            task = TaskForPmapHelper(ptd.pmap)
+            task = process.TaskForPmapHelper(ptd.pmap)
             pmap_str = "(User Task: {:s})".format("{:#x}".format(task) if task is not None else "<unknown>")
         print("pmap: {:#x} {:s}".format(ptd.pmap, pmap_str))
         nttes = page_size // 8

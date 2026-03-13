@@ -37,8 +37,6 @@
 
 #if CONFIG_SPTM
 #include <arm64/sptm/sptm.h>
-#include <arm64/hv/hv_vm.h>
-#include <arm64/hv/hv_vcpu.h>
 #else
 #error Invalid configuration
 #endif /* CONFIG_SPTM */
@@ -121,6 +119,9 @@ static exclaves_clock_t exclaves_clock[] = {
 
 static kern_return_t
 exclaves_endpoint_call_internal(ipc_port_t port, exclaves_id_t endpoint_id);
+
+static bool
+exclaves_cpu_callback(__unused void *param, enum cpu_event event, __unused unsigned int cpu_or_cluster);
 
 static kern_return_t
 exclaves_enter(void);
@@ -1168,7 +1169,9 @@ exclaves_restore_matrix_state(bool did_save_sme __unused)
 /* ringgate entry endpoints */
 enum {
 	RINGGATE_EP_ENTER,
-	RINGGATE_EP_INFO
+	RINGGATE_EP_INFO,
+	RINGGATE_EP_CPU_ONLINE,
+	RINGGATE_EP_CPU_OFFLINE,
 };
 
 /* ringgate entry status codes */
@@ -1177,6 +1180,40 @@ enum {
 	RINGGATE_STATUS_ERROR,
 	RINGGATE_STATUS_PANIC, /* RINGGATE_EP_ENTER: Another core paniced */
 };
+
+static bool
+exclaves_cpu_callback(__unused void *param, enum cpu_event event, __unused unsigned int cpu_or_cluster)
+{
+	uint32_t endpoint;
+	sptm_call_regs_t regs = { };
+	uint64_t result = RINGGATE_STATUS_ERROR;
+
+	switch (event) {
+	// Both events are guaranteed to fire on the affected CPU, which mirrors
+	// the calls from SPTM on initial CPU boot.
+	case CPU_BOOTED:
+		endpoint = RINGGATE_EP_CPU_ONLINE;
+		break;
+	case CPU_DOWN:
+		endpoint = RINGGATE_EP_CPU_OFFLINE;
+		break;
+	default:
+		return true;
+	}
+
+	if (exclaves_boot_supported()) {
+		result = sk_enter(endpoint, &regs);
+		assert(result == RINGGATE_STATUS_SUCCESS);
+	}
+
+	return true;
+}
+
+void
+exclaves_early_init(void)
+{
+	cpu_event_register_callback(exclaves_cpu_callback, NULL);
+}
 
 OS_NOINLINE
 static kern_return_t
@@ -2046,6 +2083,11 @@ handle_response_pmm_early_alloc(const XrtHosted_PmmEarlyAlloc_t *pmm_early_alloc
 		return KERN_NO_SPACE;
 	}
 
+#if HAS_MTE
+	if (flags & XNUUPCALLS_PAGEALLOCFLAGS_SEC_TRANSITION) {
+		alloc_flags |= EXCLAVES_MEMORY_PAGE_FLAGS_MTE_TAGGED;
+	}
+#endif /* HAS_MTE */
 
 	/*
 	 * As npages must be relatively small (<= EXCLAVES_MEMORY_MAX_REQUEST),
@@ -2808,8 +2850,6 @@ exclaves_requirement_startup(void)
 	if ((exclaves_entitlement_flags & EXCLAVES_PRIV_CONCLAVE_HOST) == 0) {
 		exclaves_requirement_relax(EXCLAVES_R_CONCLAVE_RESOURCES);
 	}
-
-	exclaves_requirement_relax(EXCLAVES_R_EIC);
 }
 STARTUP(TUNABLES, STARTUP_RANK_MIDDLE, exclaves_requirement_startup);
 
@@ -2817,6 +2857,23 @@ STARTUP(TUNABLES, STARTUP_RANK_MIDDLE, exclaves_requirement_startup);
 
 #endif /* CONFIG_EXCLAVES */
 
+#if __has_include(<Tightbeam/tightbeam.h>)
+
+#include <Tightbeam/tightbeam.h>
+
+/*
+ * Tightbeam needs to initialize for kernel transports (xnu and AFK).
+ * Only the XNU transport is specific to exclaves - AFK is not.
+ */
+__startup_func
+static void
+tightbeam_startup(void)
+{
+	tb_transport_startup();
+}
+STARTUP(EARLY_BOOT, STARTUP_RANK_MIDDLE, tightbeam_startup);
+
+#endif /* __has_include(<Tightbeam/tightbeam.h> */
 
 #ifndef CONFIG_EXCLAVES
 /* stubs for sensor functions which are not compiled in from exclaves.c when

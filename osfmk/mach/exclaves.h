@@ -1081,6 +1081,15 @@ exclaves_display_healthcheck_rate(uint64_t ns);
 
 /* Internal kernel interface */
 
+/*!
+ * @function exclaves_indicator_metrics_report
+ *
+ * @abstract
+ * Get ExclaveIndicatorController metrics and report them to CoreAnalytics
+ */
+extern void
+exclaves_indicator_metrics_report(void);
+
 extern kern_return_t
 exclaves_thread_terminate(thread_t thread);
 
@@ -1103,6 +1112,9 @@ typedef struct {
 	unsigned long scid;
 	uint64_t usecnt;
 } exclaves_ctx_t;
+
+extern void
+exclaves_early_init(void);
 
 #endif /* defined(MACH_KERNEL_PRIVATE) */
 

@@ -5,8 +5,9 @@
 T_GLOBAL_META(
 	T_META_RADAR_COMPONENT_NAME("xnu"),
 	T_META_RADAR_COMPONENT_VERSION("signals"),
-	T_META_OWNER("m_staveleytaylor"),
-	T_META_RUN_CONCURRENTLY(true)
+	T_META_TAG_VM_PREFERRED,
+	T_META_RUN_CONCURRENTLY(true),
+	T_META_CHECK_LEAKS(false)
 	);
 
 T_DECL(signal_initproc_prohibited, "Check that signalling initproc is prohibited", T_META_ASROOT(TRUE), T_META_TAG_VM_PREFERRED)

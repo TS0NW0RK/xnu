@@ -441,9 +441,11 @@ def GetThreadSummary(thread, O=None):
     """
 
     # Check that this is a valid thread (if possible).
-    if hasattr(thread, "thread_magic") and thread.thread_magic != 0x1234ABCDDCBA4321:
-        # Do not raise exception so iterators like showscheduler don't abort.
-        return f"{thread:<#018x} <invalid thread>"
+    if hasattr(thread, "thread_magic") :
+        if (thread.thread_magic != 0x1fc01fc01fc01fc0 and
+            thread.thread_magic != 0x1234ABCDDCBA4321) : # compatible with old core files
+            # Do not raise exception so iterators like showscheduler don't abort.
+            return f"{thread:<#018x} <invalid thread>"
 
     thread_ptr_str = '{:<#018x}'.format(thread)
     thread_task_ptr_str = '{:<#018x}'.format(thread.t_tro.tro_task)
@@ -919,11 +921,10 @@ def ShowPid(cmd_args=None):
     if cmd_args is None or len(cmd_args) == 0:
         raise ArgumentError("No arguments passed")
     pidval = ArgumentStringToInt(cmd_args[0])
-    for t in kern.tasks:
-        pval = GetProcFromTask(t)
-        if pval is not None and GetProcPID(pval) == pidval:
+    for task, proc in GetAllTasks():
+        if proc is not None and GetProcPID(proc) == pidval:
             print(GetTaskSummary.header + " " + GetProcSummary.header)
-            print(GetTaskSummary(t) + " " + GetProcSummary(pval))
+            print(GetTaskSummary(task) + " " + GetProcSummary(proc))
             break
 
 # EndMacro: showpid
@@ -1298,24 +1299,43 @@ def ShowTaskStacks(task, O=None, regex=None):
                 print(GetThreadBackTrace(th, prefix="    ") + "\n")
 
 
+def GetAllTasks():
+    """ Generator that yields all tasks (both active and zombie).
+        returns:
+            Generator of (task, proc) tuples for all tasks
+    """
+    # Yield active tasks
+    for t in kern.tasks:
+        pval = GetProcFromTask(t)
+        yield (t, pval)
+
+    # Yield zombie tasks
+    for proc in kern.zombprocs:
+        if proc.p_stat != 5:  # Skip if process state is 5 (SIDL - intermediate state during process creation)
+            t = GetTaskFromProc(proc)
+            if t is not None:
+                yield (t, proc)
+
 def FindTasksByName(searchstr, ignore_case=True):
-    """ Search the list of tasks by name. 
+    """ Search the list of tasks by name.
         params:
             searchstr: str - a regex like string to search for task
             ignore_case: bool - If False then exact matching will be enforced
         returns:
             [] - array of task object. Empty if not found any
     """
-    re_options = 0   
+    re_options = 0
     if ignore_case:
         re_options = re.IGNORECASE
     search_regex = re.compile(searchstr, re_options)
     retval = []
-    for t in kern.tasks: 
-        pval = GetProcFromTask(t)
-        process_name = "{:s}".format(GetProcName(pval))
-        if search_regex.search(process_name):
-            retval.append(t)
+
+    for task, proc in GetAllTasks():
+        if proc is not None:
+            process_name = "{:s}".format(GetProcName(proc))
+            if search_regex.search(process_name):
+                retval.append(task)
+
     return retval
 
 @lldb_command('showtaskstacks', 'F:', fancy=True)
@@ -1892,13 +1912,12 @@ def GetProcessorSummary(processor):
     preemption_disable = 0
     preemption_disable_str = ""
 
-    if kern.arch == 'x86_64':
-        cpu_data = kern.globals.cpu_data_ptr[processor.cpu_id]
-        if (cpu_data != 0) :
-            ast = cpu_data.cpu_pending_ast
+    from misc import GetCpuDataForCpuID
+    cpu_data = GetCpuDataForCpuID(processor.cpu_id)
+    if (cpu_data != 0) :
+        ast = cpu_data.cpu_pending_ast
+        if kern.arch == 'x86_64':
             preemption_disable = cpu_data.cpu_preemption_level
-    # On arm64, it's kern.globals.CpuDataEntries[processor.cpu_id].cpu_data_vaddr
-    # but LLDB can't find CpuDataEntries...
 
     ast_str = GetASTSummary(ast)
 
@@ -1910,7 +1929,8 @@ def GetProcessorSummary(processor):
         1: '(REASON_SYSTEM)',
         2: '(REASON_USER)',
         3: '(REASON_CLPC_SYSTEM)',
-        4: '(REASON_CLPC_USER)'
+        4: '(REASON_CLPC_USER)',
+        5: '(REASON_PMGR_SYSTEM)'
     }
     
     processor_shutdown_reason_str = "";

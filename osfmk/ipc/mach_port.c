@@ -2391,6 +2391,17 @@ mach_port_construct_check_service_port(
 	return KERN_SUCCESS;
 }
 
+static bool
+mach_port_should_enforce_prp_entitlement(void)
+{
+#if XNU_TARGET_OS_OSX && CONFIG_CSR
+	/* In macOS, only enforce if SIP is on */
+	return csr_check(CSR_ALLOW_UNRESTRICTED_FS) != 0;
+#endif
+	/* default return true */
+	return true;
+}
+
 /*
  *	Routine:	mach_port_construct [kernel call]
  *	Purpose:
@@ -2460,7 +2471,13 @@ mach_port_construct(
 		if (kr != KERN_SUCCESS) {
 			return kr;
 		}
-		if ((options->flags & MPO_ENFORCE_REPLY_PORT_SEMANTICS) &&
+		if (sp_info.mspi_domain_type == XPC_DOMAIN_PORT) {
+			/*
+			 * launchd, Sandbox and xnu agree that only bootstrap port
+			 * uses XPC_DOMAIN_PORT. See _launch_bootstrap_port_construct.
+			 */
+			label.io_type = IOT_BOOTSTRAP_PORT;
+		} else if ((options->flags & MPO_ENFORCE_REPLY_PORT_SEMANTICS) &&
 		    !(policy & IPC_SPACE_POLICY_SIMULATED)) {
 			label.io_type = IOT_SERVICE_PORT;
 		} else {
@@ -2505,25 +2522,11 @@ mach_port_construct(
 	    !IOCurrentTaskHasEntitlement(port_policy_entitlement)) {
 		/*
 		 * enforce the policy construct entitlement on all
-		 * port types, besides provisional reply port (yet).
+		 * port types, besides provisional reply port which
+		 * requires an extra check.
 		 */
-		if (!(options->flags & MPO_PROVISIONAL_REPLY_PORT)) {
-			mach_port_guard_exception(options->flags, 0,
-			    kGUARD_EXC_INVALID_MPO_ENTITLEMENT);
-			return KERN_DENIED;
-		}
-
-		/* emit telemetry if needed */
-		if (ipcpv_telemetry_enabled &&
-#if XNU_TARGET_OS_OSX && CONFIG_CSR
-		    (csr_check(CSR_ALLOW_UNRESTRICTED_FS) != 0) && /* SIP enabled */
-#endif /* XNU_TARGET_OS_OSX && CONFIG_CSR */
-		    !ipc_space_has_telemetry_type(space, IS_HAS_CREATE_PRP_TELEMETRY)) {
-			mach_port_guard_exception(0, 0, kGUARD_EXC_PROVISIONAL_REPLY_PORT);
-		}
-
-		/* If we have enforcement */
-		if (prp_enforcement_enabled) {
+		if (!(options->flags & MPO_PROVISIONAL_REPLY_PORT) ||
+		    mach_port_should_enforce_prp_entitlement()) {
 			mach_port_guard_exception(options->flags, 0,
 			    kGUARD_EXC_INVALID_MPO_ENTITLEMENT);
 			return KERN_DENIED;
@@ -2579,7 +2582,8 @@ mach_port_construct(
 	 *	and early returns for errors is fraught with peril.
 	 */
 
-	if (ip_is_any_service_port_type(label.io_type)) {
+	if (ip_is_any_service_port_type(label.io_type) ||
+	    ip_is_bootstrap_port_type(label.io_type)) {
 		kr = ipc_service_port_label_alloc(&sp_info, &label);
 	} else if (label.io_type == IOT_CONNECTION_PORT &&
 	    options->service_port_name != MPO_ANONYMOUS_SERVICE) {
@@ -2640,17 +2644,6 @@ mach_port_construct(
 		}
 	} else {
 		port->ip_context = context;
-	}
-
-	/*
-	 * Set ip_bootstrap for bootstrap ports to avoid holding the port lock
-	 * in ipc_validate_local_port(). Lock needed to access port label.
-	 */
-	if (ip_is_any_service_port_type(label.io_type)) {
-		ipc_service_port_label_t sp_label = label.iol_service;
-		if (sp_label->ispl_bootstrap_port) {
-			port->ip_bootstrap = 1;
-		}
 	}
 
 	/* Unlock port */
@@ -3031,7 +3024,8 @@ mach_port_get_service_port_info(
 	/* port is locked and active */
 
 	label = ip_label_get(port);
-	if (ip_is_any_service_port_type(label.io_type)) {
+	if (ip_is_any_service_port_type(label.io_type) ||
+	    ip_is_bootstrap_port_type(label.io_type)) {
 		ipc_service_port_label_get_info(label.iol_service, sp_info);
 	} else {
 		kr = KERN_INVALID_CAPABILITY;

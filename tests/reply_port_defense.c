@@ -14,6 +14,7 @@
 #include <sys/code_signing.h>
 #include "cs_helpers.h"
 #include <TargetConditionals.h>
+#include "ipc/ipc_utils.h"
 
 #define MAX_ARGV 3
 
@@ -65,31 +66,6 @@ sip_disabled()
 	}
 	return sip_disabled;
 #else
-	return false;
-#endif
-}
-
-static bool
-ipc_hardening_disabled()
-{
-#if TARGET_OS_OSX || TARGET_OS_BRIDGE
-	/*
-	 * CS_CONFIG_GET_OUT_OF_MY_WAY (enabled via AMFI boot-args)
-	 * disables IPC security features. This boot-arg previously
-	 * caused a headache for developers on macos, who frequently use it for
-	 * testing purposes, because all of their 3rd party apps will
-	 * crash due to being treated as platform code. Unfortunately
-	 * BATS runs with this boot-arg enabled very frequently.
-	 */
-	bool enforcement_disabled = check_current_cs_flags(CS_CONFIG_GET_OUT_OF_MY_WAY);
-	if (enforcement_disabled) {
-		T_LOG("IPC HARDENING ENFORCEMENT IS DISABLED");
-	} else {
-		T_LOG("IPC HARDENING ENABLED");
-	}
-	return enforcement_disabled;
-#else /* TARGET_OS_OSX || TARGET_OS_BRIDGE */
-	/* mach hardening is only disabled by boot-args on macOS */
 	return false;
 #endif
 }
@@ -399,19 +375,13 @@ T_DECL(test_alloc_weak_reply_port,
     "1p is not allowed to create weak reply ports",
     T_META_IGNORECRASHES(".*reply_port_defense_client.*"),
     T_META_CHECK_LEAKS(false)) {
-	if (ipc_hardening_disabled()) {
+	if (ipc_hardening_disabled() || sip_disabled()) {
 		T_SKIP("hardening disabled due to boot-args");
 	}
 
 	int test_num = 10;
-	mach_exception_data_type_t expected_exception_code;
+	mach_exception_data_type_t expected_exception_code = kGUARD_EXC_INVALID_MPO_ENTITLEMENT;
 	bool triggers_exception = true;
-
-#if TARGET_OS_OSX || TARGET_OS_BRIDGE
-	expected_exception_code = kGUARD_EXC_PROVISIONAL_REPLY_PORT;
-#else
-	expected_exception_code = kGUARD_EXC_INVALID_MPO_ENTITLEMENT;
-#endif /* TARGET_OS_OSX || TARGET_OS_BRIDGE */
 
 	/* rdar://136996362 (iOS+ telemetry for restricting 1P usage of provisional reply port) */
 	reply_port_defense(true, test_num, expected_exception_code, triggers_exception);

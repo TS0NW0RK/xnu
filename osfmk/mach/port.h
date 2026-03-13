@@ -605,12 +605,12 @@ enum mach_port_guard_exception_codes {
 	/* start of always non-fatal guards */
 	kGUARD_EXC_RCV_GUARDED_DESC             = 0x00100000,     /* for development only */
 	kGUARD_EXC_SERVICE_PORT_VIOLATION_NON_FATAL = 0x00100001, /* unused, for future sp defense enablement */
-	kGUARD_EXC_PROVISIONAL_REPLY_PORT       = 0x00100002,
+	kGUARD_EXC_PROVISIONAL_REPLY_PORT       = 0x00100002, /* unused */
 	kGUARD_EXC_OOL_PORT_ARRAY_CREATION      = 0x00100003, /* unused */
 	kGUARD_EXC_MOVE_PROVISIONAL_REPLY_PORT  = 0x00100004,
 	kGUARD_EXC_REPLY_PORT_SINGLE_SO_RIGHT   = 0x00100005,
 	kGUARD_EXC_MOD_REFS_NON_FATAL           = 1u << 21,
-	kGUARD_EXC_IMMOVABLE_NON_FATAL          = 1u << 22,
+	kGUARD_EXC_IMMOVABLE_NON_FATAL          = 1u << 22, /* unused*/
 };
 
 #define MAX_FATAL_kGUARD_EXC_CODE               kGUARD_EXC_MSG_FILTERED

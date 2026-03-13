@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <mach/exclaves.h>
 #include <mach/kern_return.h>
+#include <libkern/coreanalytics/coreanalytics.h>
 
 #include "exclaves_boot.h"
 #include "exclaves_debug.h"
@@ -38,14 +39,17 @@
 #if CONFIG_EXCLAVES
 
 #include <kern/locks.h>
+#include <kern/thread.h>
 #include <kern/thread_call.h>
 
 #include "kern/exclaves.tightbeam.h"
+
 
 /* -------------------------------------------------------------------------- */
 #pragma mark EIC
 
 #define EXCLAVES_EIC "com.apple.service.ExclaveIndicatorController"
+#define EXCLAVES_EIC_COPYREQUEST "com.apple.service.ExclaveIndicatorController.SensorCopyRequest"
 
 /* The minimum time a sensor is on. */
 #define EXCLAVES_EIC_MIN_SENSOR_TIME (3100 * NSEC_PER_MSEC) /* 3.1 seconds */
@@ -54,6 +58,35 @@
 static uint64_t exclaves_display_healthcheck_rate_hz = 30;
 
 static exclaveindicatorcontroller_sensorrequest_s eic_client;
+static exclaveindicatorcontroller_sensorcopyrequest_s eic_copy_client;
+
+CA_EVENT(exclave_indicator_controller_metrics_v1,
+    CA_INT, metrics_duration_ms,
+    CA_INT, num_sessions_mic,
+    CA_INT, num_sessions_dropped_mic,
+    CA_INT, num_sessions_denied_healthcheck_mic,
+    CA_INT, num_sessions_denied_sensor_control_mic,
+    CA_INT, duration_allowed_ms_mic,
+    CA_INT, duration_pending_ms_mic,
+    CA_INT, duration_control_ms_mic,
+    CA_INT, duration_denied_ms_mic,
+    CA_INT, bips_allowed_mic,
+    CA_INT, bips_pending_mic,
+    CA_INT, bips_control_mic,
+    CA_INT, bips_denied_mic,
+
+    CA_INT, num_sessions_cam,
+    CA_INT, num_sessions_dropped_cam,
+    CA_INT, num_sessions_denied_healthcheck_cam,
+    CA_INT, num_sessions_denied_sensor_control_cam,
+    CA_INT, duration_allowed_ms_cam,
+    CA_INT, duration_pending_ms_cam,
+    CA_INT, duration_control_ms_cam,
+    CA_INT, duration_denied_ms_cam,
+    CA_INT, bips_allowed_cam,
+    CA_INT, bips_pending_cam,
+    CA_INT, bips_control_cam,
+    CA_INT, bips_denied_cam);
 
 static inline __unused exclaveindicatorcontroller_sensortype_s
 sensor_type_to_eic_sensortype(exclaves_sensor_type_t type)
@@ -104,22 +137,42 @@ eic_sensorstatus_to_sensor_status(exclaveindicatorcontroller_sensorstatusrespons
 static kern_return_t
 exclaves_eic_init(void)
 {
-	exclaves_id_t eic_id = exclaves_service_lookup(EXCLAVES_DOMAIN_KERNEL,
-	    EXCLAVES_EIC);
+	exclaves_id_t sensorrequest_id, sensorcopyrequest_id;
+	tb_endpoint_t sensorrequest_endpoint, sensorcopyrequest_endpoint;
+	tb_error_t ret;
 
-	if (eic_id == EXCLAVES_INVALID_ID) {
+	sensorrequest_id = exclaves_service_lookup(EXCLAVES_DOMAIN_KERNEL, EXCLAVES_EIC);
+	if (sensorrequest_id == EXCLAVES_INVALID_ID) {
 		exclaves_requirement_assert(EXCLAVES_R_EIC,
 		    "exclaves indicator controller not found");
 		return KERN_SUCCESS;
 	}
 
-	tb_endpoint_t ep = tb_endpoint_create_with_value(
-		TB_TRANSPORT_TYPE_XNU, eic_id, TB_ENDPOINT_OPTIONS_NONE);
+	sensorcopyrequest_id = exclaves_service_lookup(EXCLAVES_DOMAIN_KERNEL, EXCLAVES_EIC_COPYREQUEST);
+	if (sensorcopyrequest_id == EXCLAVES_INVALID_ID) {
+		exclaves_requirement_assert(EXCLAVES_R_EIC,
+		    "ExclaveIndicatorController SensorCopyRequest service not found");
+		return KERN_SUCCESS;
+	}
 
-	tb_error_t ret =
-	    exclaveindicatorcontroller_sensorrequest__init(&eic_client, ep);
+	sensorrequest_endpoint = tb_endpoint_create_with_value(TB_TRANSPORT_TYPE_XNU, sensorrequest_id, TB_ENDPOINT_OPTIONS_NONE);
+	sensorcopyrequest_endpoint = tb_endpoint_create_with_value(TB_TRANSPORT_TYPE_XNU, sensorcopyrequest_id, TB_ENDPOINT_OPTIONS_NONE);
 
-	return ret == TB_ERROR_SUCCESS ? KERN_SUCCESS : KERN_FAILURE;
+	ret = exclaveindicatorcontroller_sensorrequest__init(&eic_client, sensorrequest_endpoint);
+	if (ret != TB_ERROR_SUCCESS) {
+		exclaves_requirement_assert(EXCLAVES_R_EIC, "failed to initialize eic sensor request client");
+		return KERN_FAILURE;
+	}
+
+	ret = exclaveindicatorcontroller_sensorcopyrequest__init(&eic_copy_client, sensorcopyrequest_endpoint);
+	if (ret != TB_ERROR_SUCCESS) {
+		exclaves_requirement_assert(EXCLAVES_R_EIC, "failed to initialize eic sensor copy request client");
+		/* Clean up first client (sensorrequest) if second client (sensorcopyrequest) init fails */
+		exclaveindicatorcontroller_sensorrequest__destruct(&eic_client);
+		return KERN_FAILURE;
+	}
+
+	return KERN_SUCCESS;
 }
 
 static kern_return_t
@@ -156,14 +209,26 @@ exclaves_eic_sensor_start(exclaves_sensor_type_t __unused sensor_type,
 	assert3p(status, !=, NULL);
 	assert3u(flags, ==, 0);
 
-	*status = EXCLAVES_SENSOR_STATUS_ALLOWED;
-	return KERN_SUCCESS;
+	const exclaveindicatorcontroller_sensortype_s sensor =
+	    sensor_type_to_eic_sensortype(sensor_type);
+
+	tb_error_t ret = exclaveindicatorcontroller_sensorrequest_start(
+		&eic_client, sensor, ^(exclaveindicatorcontroller_sensorstatusresponse_s result) {
+		*status = eic_sensorstatus_to_sensor_status(result);
+	});
+
+	return ret == TB_ERROR_SUCCESS ? KERN_SUCCESS : KERN_FAILURE;
 }
 
 static kern_return_t
 exclaves_eic_sensor_stop(exclaves_sensor_type_t __unused sensor_type)
 {
-	return KERN_SUCCESS;
+	const exclaveindicatorcontroller_sensortype_s sensor =
+	    sensor_type_to_eic_sensortype(sensor_type);
+
+	tb_error_t ret = exclaveindicatorcontroller_sensorrequest_stop(&eic_client,
+	    sensor);
+	return ret == TB_ERROR_SUCCESS ? KERN_SUCCESS : KERN_FAILURE;
 }
 
 static kern_return_t
@@ -173,8 +238,15 @@ exclaves_eic_sensor_status(exclaves_sensor_type_t __unused sensor_type,
 	assert3p(status, !=, NULL);
 	assert3u(flags, ==, 0);
 
-	*status = EXCLAVES_SENSOR_STATUS_ALLOWED;
-	return KERN_SUCCESS;
+	const exclaveindicatorcontroller_sensortype_s sensor =
+	    sensor_type_to_eic_sensortype(sensor_type);
+
+	tb_error_t ret = exclaveindicatorcontroller_sensorrequest_status(
+		&eic_client, sensor, ^(exclaveindicatorcontroller_sensorstatusresponse_s result) {
+		*status = eic_sensorstatus_to_sensor_status(result);
+	});
+
+	return ret == TB_ERROR_SUCCESS ? KERN_SUCCESS : KERN_FAILURE;
 }
 
 /*
@@ -189,8 +261,8 @@ exclaves_eic_sensor_copy(uint32_t buffer, uint64_t size1, uint64_t offset1,
 	assert3u(size1, >, 0);
 	assert3p(status, !=, NULL);
 
-	tb_error_t ret = exclaveindicatorcontroller_sensorrequest_copybuffer(
-		&eic_client, buffer, offset1, size1, offset2, size2,
+	tb_error_t ret = exclaveindicatorcontroller_sensorcopyrequest_copy(
+		&eic_copy_client, buffer, offset1, size1, offset2, size2,
 		^(exclaveindicatorcontroller_sensorstatusresponse_s result) {
 		*status = eic_sensorstatus_to_sensor_status(result);
 	});
@@ -279,6 +351,7 @@ healthcheck_deadline(uint64_t *deadline, uint64_t *leeway)
 	clock_interval_to_deadline(interval, 1, deadline);
 	nanoseconds_to_absolutetime(interval / 2, leeway);
 }
+
 
 /*
  * Called from the threadcall to call into exclaves with a status command for
@@ -508,7 +581,73 @@ exclaves_indicator_min_on_time_deadlines(struct exclaves_indicator_deadlines *de
 	return ret == TB_ERROR_SUCCESS ? KERN_SUCCESS : KERN_FAILURE;
 }
 
+static kern_return_t
+exclaves_sensor_get_and_clear_metrics(ca_event_t event)
+{
+	if (!event) {
+		return KERN_INVALID_ARGUMENT;
+	}
 
+	/*
+	 * Make sure that the initialisation has taken place before calling into
+	 * the EIC. Any sensor is sufficient.
+	 */
+	exclaves_sensor_t *sensor = sensor_type_to_sensor(EXCLAVES_SENSOR_CAM);
+	if (!sensor->s_initialised) {
+		return KERN_FAILURE;
+	}
+
+	CA_EVENT_TYPE(exclave_indicator_controller_metrics_v1) * e = event->data;
+
+	tb_error_t ret = exclaveindicatorcontroller_sensorrequest_getandclearmetrics(
+		&eic_client, ^(exclaveindicatorcontroller_sensorrequestmetrics_s result) {
+		e->metrics_duration_ms = result.metricsdurationms;
+
+		/* Microphone metrics */
+		e->num_sessions_mic = result.numsessionsmic;
+		e->num_sessions_dropped_mic = result.numsessionsdroppedmic;
+		e->num_sessions_denied_healthcheck_mic = result.numsessionsdeniedhealthcheckmic;
+		e->num_sessions_denied_sensor_control_mic = result.numsessionsdeniedsensorcontrolmic;
+		e->duration_allowed_ms_mic = result.durationallowedmsmic;
+		e->duration_pending_ms_mic = result.durationpendingmsmic;
+		e->duration_control_ms_mic = result.durationcontrolmsmic;
+		e->duration_denied_ms_mic = result.durationdeniedmsmic;
+		e->bips_allowed_mic = result.bipsallowedmic;
+		e->bips_pending_mic = result.bipspendingmic;
+		e->bips_control_mic = result.bipscontrolmic;
+		e->bips_denied_mic = result.bipsdeniedmic;
+
+		/* Camera metrics */
+		e->num_sessions_cam = result.numsessionscam;
+		e->num_sessions_dropped_cam = result.numsessionsdroppedcam;
+		e->num_sessions_denied_healthcheck_cam = result.numsessionsdeniedhealthcheckcam;
+		e->num_sessions_denied_sensor_control_cam = result.numsessionsdeniedsensorcontrolcam;
+		e->duration_allowed_ms_cam = result.durationallowedmscam;
+		e->duration_pending_ms_cam = result.durationpendingmscam;
+		e->duration_control_ms_cam = result.durationcontrolmscam;
+		e->duration_denied_ms_cam = result.durationdeniedmscam;
+		e->bips_allowed_cam = result.bipsallowedcam;
+		e->bips_pending_cam = result.bipspendingcam;
+		e->bips_control_cam = result.bipscontrolcam;
+		e->bips_denied_cam = result.bipsdeniedcam;
+	});
+
+	return ret == TB_ERROR_SUCCESS ? KERN_SUCCESS : KERN_FAILURE;
+}
+
+void
+exclaves_indicator_metrics_report(void)
+{
+	ca_event_t event = CA_EVENT_ALLOCATE(exclave_indicator_controller_metrics_v1);
+	kern_return_t kr = exclaves_sensor_get_and_clear_metrics(event);
+
+	if (kr != KERN_SUCCESS) {
+		CA_EVENT_DEALLOCATE(event);
+		return;
+	}
+
+	CA_EVENT_SEND(event);
+}
 
 #else /* CONFIG_EXCLAVES */
 

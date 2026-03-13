@@ -116,6 +116,7 @@
 #include <mach/resource_monitors.h>
 #include <machine/machine_routines.h>
 #include <sys/proc_require.h>
+#include <vm/vm_compressor_internal.h>
 
 #include <os/log_private.h>
 
@@ -132,8 +133,9 @@ extern volatile struct xnu_hw_shmem_dbg_command_info *hwsd_info;
 
 #if CONFIG_XNUPOST
 #include <tests/xnupost.h>
-extern int vsnprintf(char *, size_t, const char *, va_list);
 #endif
+
+extern int vsnprintf(char *, size_t, const char *, va_list);
 
 #if CONFIG_CSR
 #include <sys/csr.h>
@@ -186,13 +188,11 @@ struct additional_panic_data_buffer *panic_data_buffers = NULL;
 #define panic_stop()    panic_spin_forever()
 #endif
 
-#if defined(__arm64__) && (DEVELOPMENT || DEBUG)
 /*
  * More than enough for any typical format string passed to panic();
  * anything longer will be truncated but that's better than nothing.
  */
 #define EARLY_PANIC_BUFLEN 256
-#endif
 
 struct debugger_state {
 	uint64_t        db_panic_options;
@@ -568,6 +568,8 @@ phys_carveout_init(void)
 			&phys_carveout_pa,
 			&phys_carveout_size,
 			phys_carveout_mb != 0,
+
+			/* Before Donan, XNU allocates the panic-trace carveout. */
 		}
 	};
 
@@ -805,6 +807,23 @@ debug_is_current_cpu_in_panic_state(void)
 	return current_debugger_state()->db_entry_count > 0;
 }
 
+#if defined(__arm64__)
+/*
+ * Helper function to compute kernel text exec slide and base values
+ */
+static void
+get_kernel_text_exec_slide_and_base(unsigned long *exec_slide, unsigned long *exec_base)
+{
+	extern vm_offset_t segTEXTEXECB, vm_kernel_slide;
+	void *kch = PE_get_kc_header(KCKindPrimary);
+
+	if (kch && exec_slide && exec_base) {
+		*exec_slide = (unsigned long)segTEXTEXECB - (unsigned long)kch + vm_kernel_slide;
+		*exec_base = (unsigned long)segTEXTEXECB;
+	}
+}
+#endif /* defined(__arm64__) */
+
 /*
  * check if we are in a nested panic, report findings, take evasive action where necessary
  *
@@ -820,6 +839,14 @@ check_and_handle_nested_panic(uint64_t panic_options_mask, unsigned long panic_c
 		// if we panic *after* the log is finalized then we will only see it in the serial log
 		//
 		paniclog_append_noflush("Nested panic detected - entry count: %d panic_caller: 0x%016lx\n", CPUDEBUGGERCOUNT, panic_caller);
+
+#if defined(__arm64__)
+		// Print kernel slide and base information for nested panics in order to enable symbolication
+		unsigned long kernel_text_exec_slide = 0, kernel_text_exec_base = 0;
+		get_kernel_text_exec_slide_and_base(&kernel_text_exec_slide, &kernel_text_exec_base);
+		paniclog_append_noflush("Kernel text exec slide: 0x%016lx\n", kernel_text_exec_slide);
+		paniclog_append_noflush("Kernel text exec base: 0x%016lx\n", kernel_text_exec_base);
+#endif /* defined(__arm64__) */
 		print_curr_backtrace();
 		paniclog_flush();
 
@@ -1220,6 +1247,15 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
 #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)
 	read_lbr();
 #endif
+
+	/* For very early panics before XNU serial initialization. */
+	if (PE_kputc == NULL) {
+		char buf[EARLY_PANIC_BUFLEN];
+		vsnprintf(buf, EARLY_PANIC_BUFLEN, panic_format_str, *panic_args);
+		paniclog_append_noflush("panic: %s\n", buf);
+		paniclog_append_noflush("Kernel panicked very early before serial init, spinning forever...\n");
+		panic_spin_forever();
+	}
 
 	/* optionally call sync, to reduce lost logs on restart, avoid on recursive panic. Unsafe due to unbounded sync() duration */
 	if ((panic_options_mask & DEBUGGER_OPTION_SYNC_ON_PANIC_UNSAFE) && (CPUDEBUGGERCOUNT == 0)) {
@@ -2093,9 +2129,10 @@ panic_display_kernel_aslr(void)
 		paniclog_append_noflush("Kernel slide:      0x%016lx\n", vm_kernel_stext - (unsigned long)kch + vm_kernel_slide);
 		paniclog_append_noflush("Kernel text base:  %p\n", (void *) vm_kernel_stext);
 #if defined(__arm64__)
-		extern vm_offset_t segTEXTEXECB;
-		paniclog_append_noflush("Kernel text exec slide: 0x%016lx\n", (unsigned long)segTEXTEXECB - (unsigned long)kch + vm_kernel_slide);
-		paniclog_append_noflush("Kernel text exec base:  0x%016lx\n", (unsigned long)segTEXTEXECB);
+		unsigned long kernel_text_exec_slide = 0, kernel_text_exec_base = 0;
+		get_kernel_text_exec_slide_and_base(&kernel_text_exec_slide, &kernel_text_exec_base);
+		paniclog_append_noflush("Kernel text exec slide: 0x%016lx\n", kernel_text_exec_slide);
+		paniclog_append_noflush("Kernel text exec base:  0x%016lx\n", kernel_text_exec_base);
 #endif /* defined(__arm64__) */
 	} else if (vm_kernel_slide) {
 		paniclog_append_noflush("Kernel slide:      0x%016lx\n", (unsigned long) vm_kernel_slide);
@@ -2125,17 +2162,6 @@ panic_display_ecc_errors(void)
 }
 #endif /* CONFIG_ECC_LOGGING */
 
-#if CONFIG_FREEZE
-extern bool freezer_incore_cseg_acct;
-extern int32_t c_segment_pages_compressed_incore;
-#endif
-
-extern uint32_t c_segment_pages_compressed;
-extern uint32_t c_segment_count;
-extern uint32_t c_segments_limit;
-extern uint32_t c_segment_pages_compressed_limit;
-extern uint32_t c_segment_pages_compressed_nearing_limit;
-extern uint32_t c_segments_nearing_limit;
 extern int vm_num_swap_files;
 
 void

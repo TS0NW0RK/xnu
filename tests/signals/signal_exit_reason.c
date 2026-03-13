@@ -47,10 +47,13 @@
 
 
 T_GLOBAL_META(
+	T_META_TAG_VM_PREFERRED,
 	T_META_NAMESPACE("xnu.misc"),
 	T_META_RADAR_COMPONENT_NAME("xnu"),
-	T_META_RADAR_COMPONENT_VERSION("misc"),
-	T_META_RUN_CONCURRENTLY(true));
+	T_META_RADAR_COMPONENT_VERSION("signals"),
+	T_META_CHECK_LEAKS(false),
+	T_META_RUN_CONCURRENTLY(true),
+	T_META_IGNORECRASHES(".*signal_exit_reason.*"));
 
 static dispatch_queue_t exit_queue;
 
@@ -417,9 +420,7 @@ T_DECL(signal_zombie, "signaling a zombie should work", T_META_TAG_VM_PREFERRED)
 	});
 }
 
-T_DECL(proc_signal_delegate_success, "proc_signal_delegate should work",
-    T_META_TAG_VM_PREFERRED,
-    T_META_ENABLED(false) /* rdar://146369624 */)
+T_DECL(proc_signal_delegate_success, "proc_signal_delegate should work", T_META_TAG_VM_PREFERRED)
 {
 	dispatch_test(^{
 		__test_exit_reason_delegate_signal(SIGABRT);

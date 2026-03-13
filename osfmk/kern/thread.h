@@ -384,7 +384,7 @@ typedef union thread_rr_state {
 
 struct thread {
 #if MACH_ASSERT
-#define THREAD_MAGIC 0x1234ABCDDCBA4321ULL
+#define THREAD_MAGIC 0x1fc01fc01fc01fc0ULL /* materializes with a single mov immediate */
 	/* Ensure nothing uses &thread as a queue entry */
 	uint64_t                thread_magic;
 #endif /* MACH_ASSERT */
@@ -585,6 +585,9 @@ struct thread {
 	int16_t                 task_priority;          /* copy of task base priority */
 	uint16_t                priority_floor_count;   /* number of push to boost the floor priority */
 	int16_t                 suspend_count;          /* Kernel holds on this thread  */
+#if HAS_MTE
+	uint8_t                 page_wait_class;        /* The type of VM page this thread will wait on next */
+#endif /* HAS_MTE */
 
 	int                     iotier_override;        /* atomic operations to set, cleared on ret to user */
 	os_ref_atomic_t         ref_count;              /* number of references to me */
@@ -1063,6 +1066,14 @@ struct thread {
 	 * Modified under exclaves_collect_mtx. */
 	queue_chain_t th_exclaves_inspection_queue_kperf;
 #endif /* CONFIG_EXCLAVES */
+#if HAS_MTE
+	/*
+	 * Temporary context used while performing faultable accesess on IOMD memory.
+	 * This holds the task that originally provided the backing memory for the IOMD.
+	 * This value being non-NULL signifies that we're in the critical faultable access window.
+	 */
+	task_t iomd_faultable_buffer_provider;
+#endif /* HAS_MTE */
 };
 
 #define ith_receive         saved.receive
@@ -1097,9 +1108,7 @@ struct thread {
 	         (msgt_name) == MACH_MSG_TYPE_PORT_SEND_ONCE))
 
 #if MACH_ASSERT
-#define assert_thread_magic(thread) assertf((thread)->thread_magic == THREAD_MAGIC, \
-	                                    "bad thread magic 0x%llx for thread %p, expected 0x%llx", \
-	                                    (thread)->thread_magic, (thread), THREAD_MAGIC)
+#define assert_thread_magic(thread) assert3u((thread)->thread_magic, ==, THREAD_MAGIC)
 #else
 #define assert_thread_magic(thread) do { (void)(thread); } while (0)
 #endif
@@ -1991,6 +2000,29 @@ extern void thread_set_thread_name(thread_t th, const char* name);
 extern thread_t current_thread(void) __pure2;
 #endif
 
+#if HAS_MTE
+/*! @function current_thread_enter_iomd_faultable_access_with_buffer_provider
+ *   @abstract Store context for a critical faultable region while accessing tagged memory.
+ *       @discussion We have paths in which the kernel is holding a tagged mapping which
+ *              has a true share with userspace. Therefore, userspace can induce the kernel
+ *              to take a TCF by changing the tag after handing the memory to the kernel.
+ *              To deal with this, we enter a critical region while accessing this sort of
+ *              memory, during which we'll recognize the fault as being 'caused by' the
+ *              userspace task.
+ *   @param provider The task to whom tag mismatches should be attributed.
+ */
+void current_thread_enter_iomd_faultable_access_with_buffer_provider(task_t provider);
+/*! @function current_thread_exit_iomd_faultable_access
+ *   @abstract Exit a critical region of accessing uncontrolled tagged memory.
+ *       @discussion See current_thread_enter_iomd_faultable_access_with_buffer_provider
+ */
+void current_thread_exit_iomd_faultable_access(void);
+/*! @function current_thread_get_iomd_faultable_access_buffer_provider
+ *   @abstract Retrieve the task pointer storing the current faultable buffer provider.
+ *       @discussion See current_thread_enter_iomd_faultable_access_with_buffer_provider
+ */
+task_t current_thread_get_iomd_faultable_access_buffer_provider(void);
+#endif /* HAS_MTE */
 
 extern uint64_t thread_tid(thread_t thread) __pure2;
 
